@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>PHP + AJAX CRUD with PayPal Integration</title>
+<style>
+  body { font-family: Arial, sans-serif; max-width: 900px; margin: 40px auto; color: #222; }
+  h1 { font-size: 22px; }
+  table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+  th, td { border: 1px solid #ddd; padding: 8px 10px; text-align: left; font-size: 14px; }
+  th { background: #f4f4f4; }
+  input, textarea { padding: 6px; width: 100%; box-sizing: border-box; }
+  form#productForm { display: grid; grid-template-columns: 1fr 1fr 120px 100px; gap: 8px; align-items: end; margin-top: 20px; }
+  form#productForm label { font-size: 12px; color: #555; display: block; margin-bottom: 2px; }
+  button { cursor: pointer; padding: 7px 14px; border: none; border-radius: 4px; background: #2d6cdf; color: #fff; }
+  button.danger { background: #d9534f; }
+  button.secondary { background: #888; }
+  .actions button { margin-right: 6px; font-size: 12px; padding: 4px 8px; }
+  #status { margin-top: 10px; font-size: 13px; color: #2d6cdf; }
+  .paypal-cell { min-width: 180px; }
+</style>
+</head>
+<body>
+
+<h1>Product CRUD (PHP + AJAX) + PayPal Checkout</h1>
+
+<form id="productForm">
+  <input type="hidden" id="productId">
+  <div>
+    <label>Name</label>
+    <input type="text" id="name" required>
+  </div>
+  <div>
+    <label>Description</label>
+    <input type="text" id="description">
+  </div>
+  <div>
+    <label>Price (USD)</label>
+    <input type="number" step="0.01" id="price" required>
+  </div>
+  <div>
+    <button type="submit" id="saveBtn">Add</button>
+    <button type="button" class="secondary" id="cancelEdit" style="display:none;">Cancel</button>
+  </div>
+</form>
+<div id="status"></div>
+
+<table>
+  <thead>
+    <tr>
+      <th>ID</th><th>Name</th><th>Description</th><th>Price</th><th>Actions</th><th>Pay with PayPal</th>
+    </tr>
+  </thead>
+  <tbody id="productTableBody"></tbody>
+</table>
+
+<!-- PayPal JS SDK - replace client-id with your own sandbox client id -->
+<script src="https://www.paypal.com/sdk/js?client-id=YOUR_SANDBOX_CLIENT_ID&currency=USD"></script>
+
+<script>
+const API_URL = 'api.php';
+
+async function loadProducts() {
+  const res = await fetch(API_URL);
+  const products = await res.json();
+  const tbody = document.getElementById('productTableBody');
+  tbody.innerHTML = '';
+
+  products.forEach(p => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${p.id}</td>
+      <td>${escapeHtml(p.name)}</td>
+      <td>${escapeHtml(p.description || '')}</td>
+      <td>$${parseFloat(p.price).toFixed(2)}</td>
+      <td class="actions">
+        <button onclick="editProduct(${p.id}, '${escapeAttr(p.name)}', '${escapeAttr(p.description || '')}', ${p.price})">Edit</button>
+        <button class="danger" onclick="deleteProduct(${p.id})">Delete</button>
+      </td>
+      <td class="paypal-cell" id="paypal-btn-${p.id}"></td>
+    `;
+    tbody.appendChild(tr);
+    renderPaypalButton(p.id);
+  });
+}
+
+function renderPaypalButton(productId) {
+  if (!window.paypal) return; // SDK not loaded (no client id set yet)
+  paypal.Buttons({
+    style: { layout: 'horizontal', height: 30, tagline: false },
+    createOrder: async () => {
+      const res = await fetch('paypal_create_order.php', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ product_id: productId })
+      });
+      const order = await res.json();
+      return order.id;
+    },
+    onApprove: async (data) => {
+      const res = await fetch('paypal_capture_order.php', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ order_id: data.orderID })
+      });
+      const result = await res.json();
+      setStatus('Payment ' + (result.status || 'processed') + ' for order ' + data.orderID);
+    },
+    onError: (err) => {
+      setStatus('PayPal error: ' + err);
+    }
+  }).render('#paypal-btn-' + productId);
+}
+
+document.getElementById('productForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const id = document.getElementById('productId').value;
+  const payload = {
+    name: document.getElementById('name').value,
+    description: document.getElementById('description').value,
+    price: parseFloat(document.getElementById('price').value)
+  };
+
+  if (id) {
+    payload.id = id;
+    await fetch(API_URL, { method: 'PUT', body: JSON.stringify(payload) });
+    setStatus('Product updated.');
+  } else {
+    await fetch(API_URL, { method: 'POST', body: JSON.stringify(payload) });
+    setStatus('Product added.');
+  }
+  resetForm();
+  loadProducts();
+});
+
+function editProduct(id, name, description, price) {
+  document.getElementById('productId').value = id;
+  document.getElementById('name').value = name;
+  document.getElementById('description').value = description;
+  document.getElementById('price').value = price;
+  document.getElementById('saveBtn').textContent = 'Update';
+  document.getElementById('cancelEdit').style.display = 'inline-block';
+}
+
+document.getElementById('cancelEdit').addEventListener('click', resetForm);
+
+function resetForm() {
+  document.getElementById('productForm').reset();
+  document.getElementById('productId').value = '';
+  document.getElementById('saveBtn').textContent = 'Add';
+  document.getElementById('cancelEdit').style.display = 'none';
+}
+
+async function deleteProduct(id) {
+  if (!confirm('Delete this product?')) return;
+  await fetch(API_URL + '?id=' + id, { method: 'DELETE' });
+  setStatus('Product deleted.');
+  loadProducts();
+}
+
+function setStatus(msg) {
+  document.getElementById('status').textContent = msg;
+}
+
+function escapeHtml(str) {
+  return str.replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+}
+function escapeAttr(str) {
+  return String(str).replace(/'/g, "\\'");
+}
+
+loadProducts();
+</script>
+
+</body>
+</html>
